@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhereUAt - Family Tracker</title>
+  
+  <!-- Leaflet CSS (Map Styling) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: #f0f2f5;
+    }
+    #map {
+      flex: 1;
+      width: 100%;
+      z-index: 1;
+    }
+    .controls {
+      background: white;
+      padding: 1.5rem;
+      box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      flex-wrap: wrap;
+      z-index: 2;
+    }
+    input {
+      padding: 0.75rem;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      flex: 1;
+      min-width: 200px;
+      font-size: 1rem;
+    }
+    button {
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    #startBtn {
+      background: #4CAF50;
+      color: white;
+    }
+    #startBtn:hover {
+      background: #45a049;
+    }
+    #stopBtn {
+      background: #f44336;
+      color: white;
+      display: none;
+    }
+    #stopBtn:hover {
+      background: #da190b;
+    }
+    .status {
+      font-size: 0.9rem;
+      color: #666;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .user-marker {
+      font-weight: bold;
+      color: #333;
+      background: rgba(255,255,255,0.9);
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+    }
+    @media (max-width: 600px) {
+      .controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .status {
+        margin-left: 0;
+        text-align: center;
+        margin-top: 0.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  
+  <div class="controls">
+    <input type="text" id="username" placeholder="Enter your name (e.g. Dad)" />
+    <button id="startBtn">Start Sharing</button>
+    <button id="stopBtn">Stop Sharing</button>
+    <div class="status" id="status">Ready</div>
+  </div>
+
+  <!-- Leaflet JS (Map Engine) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  
+  <!-- Firebase SDK (Modular) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getFirestore, collection, addDoc, doc, setDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+    // 🔥 REPLACE THIS WITH YOUR FIREBASE CONFIG FROM THE SCREENSHOT 🔥
+     const firebaseConfig = {
+  apiKey: "AIzaSyCvwKWXr1rIChCPgzBBnrj6GXapoiJrPxo",
+  authDomain: "whereuat-firebase.firebaseapp.com",
+  projectId: "whereuat-firebase",
+  storageBucket: "whereuat-firebase.firebasestorage.app",
+  messagingSenderId: "438926374560",
+  appId: "1:438926374560:web:842e61463227df1563bbc5"
+};
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // Initialize Map
+    const map = L.map('map').setView([0, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const userMarkers = {};
+    let watchId = null;
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const usernameInput = document.getElementById('username');
+    const statusDiv = document.getElementById('status');
+
+    // Listen for location updates from Firebase
+    const locationsQuery = query(collection(db, "locations"));
+    
+    onSnapshot(locationsQuery, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        const data = change.doc.data();
+        const userId = change.doc.id;
+        
+        if (change.type === "added" || change.type === "modified") {
+          if (!userMarkers[userId]) {
+            // Create new marker
+            const marker = L.marker([data.lat, data.lng]).addTo(map)
+              .bindPopup(`<div class="user-marker">${data.name}</div>`);
+            userMarkers[userId] = marker;
+          }
+          // Update marker position
+          userMarkers[userId].setLatLng([data.lat, data.lng]);
+          userMarkers[userId].setPopupContent(`<div class="user-marker">${data.name}</div>`);
+        }
+      });
+      
+      // Adjust map view to show all markers if any exist
+      const markers = Object.values(userMarkers);
+      if (markers.length > 0) {
+        const group = new L.featureGroup(markers);
+        map.fitBounds(group.getBounds().pad(0.1));
+      }
+    });
+
+    // Start Sharing Location
+    startBtn.addEventListener('click', async () => {
+      const name = usernameInput.value.trim();
+      if (!name) {
+        alert("Please enter your name!");
+        return;
+      }
+
+      if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser");
+        return;
+      }
+
+      statusDiv.textContent = "Getting location...";
+      
+      // Generate a unique user ID for this session
+      const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      try {
+        // Save user info to Firebase
+        await setDoc(doc(db, "locations", userId), {
+          name: name,
+          lat: 0,
+          lng: 0,
+          timestamp: Date.now()
+        });
+
+        watchId = navigator.geolocation.watchPosition(
+          (position) => {
+            const { latitude, longitude } = position.coords;
+            
+            // Update Firebase
+            setDoc(doc(db, "locations", userId), {
+              name: name,
+              lat: latitude,
+              lng: longitude,
+              timestamp: Date.now()
+            });
+
+            statusDiv.textContent = `Sharing: ${name} @ ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+          },
+          (error) => {
+            console.error("Location error:", error);
+            statusDiv.textContent = `Error: ${error.message}`;
+          },
+          {
+            enableHighAccuracy: true,
+            maximumAge: 10000,
+            timeout: 5000
+          }
+        );
+
+        // Update UI
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'inline-block';
+        usernameInput.disabled = true;
+        statusDiv.textContent = `Sharing started as "${name}"`;
+
+      } catch (error) {
+        console.error("Firebase error:", error);
+        statusDiv.textContent = "Error connecting to server";
+      }
+    });
+
+    // Stop Sharing Location
+    stopBtn.addEventListener('click', () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      
+      startBtn.style.display = 'inline-block';
+      stopBtn.style.display = 'none';
+      usernameInput.disabled = false;
+      statusDiv.textContent = "Sharing stopped";
+    });
+
+    // Auto-focus on username input
+    usernameInput.focus();
+  </script>
+</body>
+</html>
