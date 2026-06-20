@@ -79,6 +79,8 @@
     }
     .primary-btn { background: #4CAF50; color: white; }
     .primary-btn:hover { background: #45a049; }
+    .secondary-btn { background: #2196F3; color: white; }
+    .secondary-btn:hover { background: #0b7dda; }
     .danger-btn { background: #f44336; color: white; }
     .danger-btn:hover { background: #da190b; }
     #stopBtn { display: none; }
@@ -120,6 +122,7 @@
       <input type="text" id="username" placeholder="Enter your name (e.g. Dad)" />
       <button id="startBtn" class="primary-btn">Start Sharing</button>
       <button id="stopBtn" class="danger-btn">Stop Sharing</button>
+      <button id="recenterBtn" class="secondary-btn">Find Family</button>
       <div class="status" id="status">Ready</div>
       <button id="logoutBtn">Logout</button>
     </div>
@@ -157,12 +160,14 @@
     
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
+    const recenterBtn = document.getElementById('recenterBtn');
     const usernameInput = document.getElementById('username');
     const statusDiv = document.getElementById('status');
 
     // App State
     let map = null;
     let mapInitialized = false;
+    let initialFitDone = false; // Prevents the map from continuously snapping back
     const userMarkers = {};
     let watchId = null;
     let currentUserId = null;
@@ -170,20 +175,17 @@
 
     // --- AUTHENTICATION LOGIC ---
 
-    // Listen for login state changes
     onAuthStateChanged(auth, (user) => {
       if (user) {
-        // User is signed in
         loginScreen.style.display = 'none';
         appContent.style.display = 'flex';
         initMap();
         startListeningToLocations();
       } else {
-        // User is signed out
         loginScreen.style.display = 'flex';
         appContent.style.display = 'none';
         if (unsubscribeLocations) unsubscribeLocations();
-        stopSharing(); // Ensure tracking stops if logged out
+        stopSharing();
       }
     });
 
@@ -205,16 +207,25 @@
     function initMap() {
       if (mapInitialized) return;
       
-      // Defaulting view to the Kelmscott area
       map = L.map('map').setView([-32.12, 116.01], 13);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors'
       }).addTo(map);
       
-      // Fix Leaflet container sizing bug when unhidden
       setTimeout(() => map.invalidateSize(), 100); 
       mapInitialized = true;
     }
+
+    // Function to manually snap camera to show all active users
+    function fitMapToMarkers() {
+      const markers = Object.values(userMarkers);
+      if (markers.length > 0) {
+        const group = new L.featureGroup(markers);
+        map.fitBounds(group.getBounds().pad(0.1));
+      }
+    }
+
+    recenterBtn.addEventListener('click', fitMapToMarkers);
 
     function startListeningToLocations() {
       const locationsQuery = query(collection(db, "locations"));
@@ -239,11 +250,10 @@
           }
         });
         
-        // Auto-fit map to show all family members
-        const markers = Object.values(userMarkers);
-        if (markers.length > 0) {
-          const group = new L.featureGroup(markers);
-          map.fitBounds(group.getBounds().pad(0.1));
+        // Auto-fit map ONLY on the initial load of data
+        if (!initialFitDone && Object.keys(userMarkers).length > 0) {
+          fitMapToMarkers();
+          initialFitDone = true;
         }
       });
     }
@@ -277,7 +287,6 @@
         watchId = navigator.geolocation.watchPosition(
           (position) => {
             const { latitude, longitude } = position.coords;
-            // Only write to DB once we actually have the coordinates
             setDoc(doc(db, "locations", currentUserId), {
               name: name,
               lat: latitude,
