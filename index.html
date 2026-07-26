@@ -42,7 +42,7 @@
     .login-box h2 { text-align: center; color: #333; margin-bottom: 0.5rem; }
     
     #appContent {
-      display: none; /* Hidden until logged in */
+      display: none; 
       flex-direction: column;
       height: 100vh;
       width: 100%;
@@ -87,7 +87,10 @@
     #logoutBtn { background: #555; color: white; margin-left: auto; }
     #logoutBtn:hover { background: #333; }
     
-    .status { font-size: 0.9rem; color: #666; white-space: nowrap; }
+    .status { font-size: 0.9rem; color: #666; font-weight: 500; white-space: nowrap; }
+    .status.active { color: #4CAF50; }
+    .status.error { color: #f44336; }
+
     .user-marker {
       font-weight: bold;
       color: #333;
@@ -109,8 +112,8 @@
   <div id="loginScreen">
     <div class="login-box">
       <h2>Family Tracker</h2>
-      <input type="email" id="emailInput" placeholder="Email" />
-      <input type="password" id="passwordInput" placeholder="Password" />
+      <input type="email" id="emailInput" placeholder="Email" autocomplete="username" />
+      <input type="password" id="passwordInput" placeholder="Password" autocomplete="current-password" />
       <button id="loginBtn" class="primary-btn">Secure Login</button>
       <div id="loginError" style="color: red; font-size: 0.85rem; text-align: center;"></div>
     </div>
@@ -144,7 +147,6 @@
       appId: "1:438926374560:web:842e61463227df1563bbc5"
     };
 
-    // Initialize Firebase
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
     const auth = getAuth(app);
@@ -167,11 +169,20 @@
     // App State
     let map = null;
     let mapInitialized = false;
-    let initialFitDone = false; // Prevents the map from continuously snapping back
-    const userMarkers = {};
+    let initialFitDone = false; 
+    let userMarkers = {}; // Changed to store { marker: L.marker, timestamp: number }
     let watchId = null;
     let currentUserId = null;
     let unsubscribeLocations = null;
+    let staleCheckInterval = null;
+
+    const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+    // --- INITIALIZATION ---
+    
+    // Load saved username for QoL
+    const savedName = localStorage.getItem('whereuat_username');
+    if (savedName) usernameInput.value = savedName;
 
     // --- AUTHENTICATION LOGIC ---
 
@@ -181,11 +192,15 @@
         appContent.style.display = 'flex';
         initMap();
         startListeningToLocations();
+        
+        // Start background sweeper for stale/crashed markers
+        staleCheckInterval = setInterval(removeStaleMarkers, 30000); 
       } else {
         loginScreen.style.display = 'flex';
         appContent.style.display = 'none';
-        if (unsubscribeLocations) unsubscribeLocations();
-        stopSharing();
+        
+        if (staleCheckInterval) clearInterval(staleCheckInterval);
+        clearMapState();
       }
     });
 
@@ -200,7 +215,11 @@
       }
     });
 
-    logoutBtn.addEventListener('click', () => signOut(auth));
+    logoutBtn.addEventListener('click', async () => {
+      // Fix: Stop sharing and delete doc BEFORE signing out to preserve permissions
+      await stopSharing(); 
+      signOut(auth);
+    });
 
     // --- MAP & TRACKING LOGIC ---
 
@@ -216,9 +235,8 @@
       mapInitialized = true;
     }
 
-    // Function to manually snap camera to show all active users
     function fitMapToMarkers() {
-      const markers = Object.values(userMarkers);
+      const markers = Object.values(userMarkers).map(u => u.marker);
       if (markers.length > 0) {
         const group = new L.featureGroup(markers);
         map.fitBounds(group.getBounds().pad(0.1));
@@ -226,6 +244,27 @@
     }
 
     recenterBtn.addEventListener('click', fitMapToMarkers);
+
+    function clearMapState() {
+      if (unsubscribeLocations) {
+        unsubscribeLocations();
+        unsubscribeLocations = null;
+      }
+      // Remove all active markers from map
+      Object.values(userMarkers).forEach(u => map.removeLayer(u.marker));
+      userMarkers = {};
+      initialFitDone = false;
+    }
+
+    function removeStaleMarkers() {
+      const now = Date.now();
+      for (const [userId, userData] of Object.entries(userMarkers)) {
+        if (now - userData.timestamp > STALE_TIMEOUT_MS) {
+          map.removeLayer(userData.marker);
+          delete userMarkers[userId];
+        }
+      }
+    }
 
     function startListeningToLocations() {
       const locationsQuery = query(collection(db, "locations"));
@@ -235,22 +274,25 @@
           const userId = change.doc.id;
           
           if (change.type === "added" || change.type === "modified") {
+            // Ignore points that are already stale on arrival
+            if (Date.now() - data.timestamp > STALE_TIMEOUT_MS) return;
+
             if (!userMarkers[userId]) {
-              const marker = L.marker([data.lat, data.lng]).addTo(map)
-                .bindPopup(`<div class="user-marker">${data.name}</div>`);
-              userMarkers[userId] = marker;
+              const marker = L.marker([data.lat, data.lng]).addTo(map);
+              userMarkers[userId] = { marker: marker, timestamp: data.timestamp };
+            } else {
+              userMarkers[userId].marker.setLatLng([data.lat, data.lng]);
+              userMarkers[userId].timestamp = data.timestamp;
             }
-            userMarkers[userId].setLatLng([data.lat, data.lng]);
-            userMarkers[userId].setPopupContent(`<div class="user-marker">${data.name}</div>`);
+            userMarkers[userId].marker.bindPopup(`<div class="user-marker">${data.name}</div>`);
           }
           
           if (change.type === "removed" && userMarkers[userId]) {
-            map.removeLayer(userMarkers[userId]);
+            map.removeLayer(userMarkers[userId].marker);
             delete userMarkers[userId];
           }
         });
         
-        // Auto-fit map ONLY on the initial load of data
         if (!initialFitDone && Object.keys(userMarkers).length > 0) {
           fitMapToMarkers();
           initialFitDone = true;
@@ -266,13 +308,16 @@
       if (currentUserId) {
         try {
           await deleteDoc(doc(db, "locations", currentUserId));
-        } catch(e) { console.error(e); }
+        } catch(e) { console.error("Cleanup error:", e); }
         currentUserId = null;
       }
+      
       startBtn.style.display = 'inline-block';
       stopBtn.style.display = 'none';
       usernameInput.disabled = false;
+      
       statusDiv.textContent = "Sharing stopped";
+      statusDiv.className = "status";
     }
 
     startBtn.addEventListener('click', async () => {
@@ -280,7 +325,11 @@
       if (!name) return alert("Please enter your name!");
       if (!navigator.geolocation) return alert("Geolocation not supported.");
 
+      localStorage.setItem('whereuat_username', name); // QoL: Save name
+      
       statusDiv.textContent = "Acquiring GPS lock...";
+      statusDiv.className = "status";
+      
       currentUserId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
       try {
@@ -293,11 +342,13 @@
               lng: longitude,
               timestamp: Date.now()
             });
-            statusDiv.textContent = `Sharing: ${name}`;
+            statusDiv.textContent = `Sharing as: ${name}`;
+            statusDiv.className = "status active";
           },
           (error) => {
             console.error("Location error:", error);
             statusDiv.textContent = `Error: ${error.message}`;
+            statusDiv.className = "status error";
             stopSharing();
           },
           { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
@@ -310,10 +361,20 @@
       } catch (error) {
         console.error("Firebase error:", error);
         statusDiv.textContent = "Error connecting to server";
+        statusDiv.className = "status error";
       }
     });
 
     stopBtn.addEventListener('click', stopSharing);
+
+    // Attempt cleanup if user explicitly closes the browser/tab
+    window.addEventListener('pagehide', () => {
+      if (currentUserId) {
+        // Fire and forget - browsers restrict async operations during page closure, 
+        // but this adds a layer of redundancy to the sweeping logic.
+        deleteDoc(doc(db, "locations", currentUserId)).catch(() => {});
+      }
+    });
 
   </script>
 </body>
