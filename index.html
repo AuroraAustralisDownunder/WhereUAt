@@ -11,7 +11,8 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      height: 100vh;
+      /* 100dvh fixes the Android bottom cut-off issue */
+      height: 100dvh; 
       display: flex;
       flex-direction: column;
       background: #f0f2f5;
@@ -40,56 +41,92 @@
       gap: 1rem;
     }
     .login-box h2 { text-align: center; color: #333; margin-bottom: 0.5rem; }
+    .login-btn {
+      padding: 0.75rem 1.5rem; background: #4CAF50; color: white;
+      border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;
+    }
+    input {
+      padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px; font-size: 1rem;
+    }
     
     #appContent {
       display: none; 
-      flex-direction: column;
-      height: 100vh;
+      height: 100dvh;
       width: 100%;
+      position: relative;
     }
 
-    #map { flex: 1; width: 100%; z-index: 1; }
+    #map { flex: 1; width: 100%; height: 100%; z-index: 1; }
     
-    .controls {
-      background: white;
-      padding: 1.5rem;
-      box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+    /* Top Bar - Username & Status */
+    .top-bar {
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.95);
+      padding: 10px 15px;
+      border-radius: 30px;
+      box-shadow: 0 2px 15px rgba(0,0,0,0.15);
       display: flex;
-      gap: 1rem;
       align-items: center;
-      flex-wrap: wrap;
-      z-index: 2;
+      gap: 10px;
+      z-index: 1000;
+      width: 90%;
+      max-width: 400px;
     }
-    input {
-      padding: 0.75rem;
-      border: 1px solid #ddd;
-      border-radius: 8px;
+    .top-bar input {
       flex: 1;
-      min-width: 200px;
-      font-size: 1rem;
-    }
-    button {
-      padding: 0.75rem 1.5rem;
+      padding: 0.5rem;
       border: none;
-      border-radius: 8px;
-      font-size: 1rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
+      background: transparent;
+      outline: none;
+      font-weight: bold;
+      color: #333;
     }
-    .primary-btn { background: #4CAF50; color: white; }
-    .primary-btn:hover { background: #45a049; }
-    .secondary-btn { background: #2196F3; color: white; }
-    .secondary-btn:hover { background: #0b7dda; }
-    .danger-btn { background: #f44336; color: white; }
-    .danger-btn:hover { background: #da190b; }
-    #stopBtn { display: none; }
-    #logoutBtn { background: #555; color: white; margin-left: auto; }
-    #logoutBtn:hover { background: #333; }
+    .status-dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: #ccc; /* Grey by default */
+      transition: background 0.3s;
+    }
+
+    /* Floating Right Controls */
+    .floating-controls {
+      position: absolute;
+      top: 50%;
+      right: 15px;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      z-index: 1000;
+    }
     
-    .status { font-size: 0.9rem; color: #666; font-weight: 500; white-space: nowrap; }
-    .status.active { color: #4CAF50; }
-    .status.error { color: #f44336; }
+    .circle-btn {
+      width: 55px;
+      height: 55px;
+      border-radius: 50%;
+      border: 3px solid white;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 1.5rem;
+      cursor: pointer;
+      transition: transform 0.2s, background 0.3s;
+      color: white;
+    }
+    .circle-btn:active { transform: scale(0.95); }
+    
+    /* Traffic Light States */
+    .btn-grey { background: #9e9e9e; } /* Ready */
+    .btn-orange { background: #ff9800; } /* Acquiring */
+    .btn-green { background: #4CAF50; } /* Sharing */
+    .btn-red { background: #f44336; } /* Error */
+    
+    .btn-blue { background: #2196F3; } /* Find All */
+    .btn-dark { background: #424242; } /* Logout */
 
     .user-marker {
       font-weight: bold;
@@ -98,37 +135,63 @@
       padding: 4px 8px;
       border-radius: 4px;
       border: 1px solid #ddd;
+      cursor: pointer;
+    }
+
+    /* Toast Notification */
+    #toast {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 0.9rem;
+      z-index: 1000;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
     }
     
-    @media (max-width: 600px) {
-      .controls { flex-direction: column; align-items: stretch; }
-      #logoutBtn { margin-left: 0; }
-      .status { text-align: center; margin-top: 0.5rem; }
-    }
   </style>
 </head>
 <body>
 
+  <!-- Login Screen -->
   <div id="loginScreen">
     <div class="login-box">
       <h2>Family Tracker</h2>
       <input type="email" id="emailInput" placeholder="Email" autocomplete="username" />
       <input type="password" id="passwordInput" placeholder="Password" autocomplete="current-password" />
-      <button id="loginBtn" class="primary-btn">Secure Login</button>
+      <button id="loginBtn" class="login-btn">Secure Login</button>
       <div id="loginError" style="color: red; font-size: 0.85rem; text-align: center;"></div>
     </div>
   </div>
 
+  <!-- App Interface -->
   <div id="appContent">
-    <div id="map"></div>
-    <div class="controls">
-      <input type="text" id="username" placeholder="Enter your name" />
-      <button id="startBtn" class="primary-btn">Start Sharing</button>
-      <button id="stopBtn" class="danger-btn">Stop Sharing</button>
-      <button id="recenterBtn" class="secondary-btn">Find Family</button>
-      <div class="status" id="status">Ready</div>
-      <button id="logoutBtn">Logout</button>
+    
+    <div class="top-bar">
+      <div id="statusDot" class="status-dot"></div>
+      <input type="text" id="username" placeholder="Your Name" />
     </div>
+
+    <div id="map"></div>
+    
+    <div class="floating-controls">
+      <!-- Traffic light sharing toggle -->
+      <button id="shareToggleBtn" class="circle-btn btn-grey" title="Toggle Sharing">⚪</button>
+      
+      <!-- Find All -->
+      <button id="recenterBtn" class="circle-btn btn-blue" title="Find Everyone">🌍</button>
+      
+      <!-- Logout -->
+      <button id="logoutBtn" class="circle-btn btn-dark" title="Logout">🚪</button>
+    </div>
+
+    <div id="toast"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -160,45 +223,73 @@
     const passwordInput = document.getElementById('passwordInput');
     const loginError = document.getElementById('loginError');
     
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
+    const shareToggleBtn = document.getElementById('shareToggleBtn');
     const recenterBtn = document.getElementById('recenterBtn');
     const usernameInput = document.getElementById('username');
-    const statusDiv = document.getElementById('status');
+    const statusDot = document.getElementById('statusDot');
+    const toast = document.getElementById('toast');
 
     // App State
     let map = null;
     let mapInitialized = false;
     let initialFitDone = false; 
-    let userMarkers = {}; // Changed to store { marker: L.marker, timestamp: number }
+    let userMarkers = {}; 
     let watchId = null;
     let currentUserId = null;
     let unsubscribeLocations = null;
     let staleCheckInterval = null;
+    let isSharing = false;
+    let lockedUserId = null; // New state for camera locking
+    let toastTimeout = null;
 
-    const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+    const STALE_TIMEOUT_MS = 5 * 60 * 1000;
 
-    // --- INITIALIZATION ---
-    
-    // Load saved username for QoL
+    // Load saved username
     const savedName = localStorage.getItem('whereuat_username');
     if (savedName) usernameInput.value = savedName;
+
+    // --- HELPER FUNCTIONS ---
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.style.opacity = 1;
+      if (toastTimeout) clearTimeout(toastTimeout);
+      toastTimeout = setTimeout(() => { toast.style.opacity = 0; }, 3000);
+    }
+
+    function setTrafficLight(state) {
+      shareToggleBtn.className = 'circle-btn';
+      if (state === 'ready') {
+        shareToggleBtn.classList.add('btn-grey');
+        shareToggleBtn.textContent = '⚪';
+        statusDot.style.background = '#ccc';
+      } else if (state === 'acquiring') {
+        shareToggleBtn.classList.add('btn-orange');
+        shareToggleBtn.textContent = '🟠';
+        statusDot.style.background = '#ff9800';
+      } else if (state === 'sharing') {
+        shareToggleBtn.classList.add('btn-green');
+        shareToggleBtn.textContent = '🟢';
+        statusDot.style.background = '#4CAF50';
+      } else if (state === 'error') {
+        shareToggleBtn.classList.add('btn-red');
+        shareToggleBtn.textContent = '🔴';
+        statusDot.style.background = '#f44336';
+      }
+    }
 
     // --- AUTHENTICATION LOGIC ---
 
     onAuthStateChanged(auth, (user) => {
       if (user) {
         loginScreen.style.display = 'none';
-        appContent.style.display = 'flex';
+        appContent.style.display = 'block'; // Block instead of flex to respect 100dvh
         initMap();
         startListeningToLocations();
-        
-        // Start background sweeper for stale/crashed markers
         staleCheckInterval = setInterval(removeStaleMarkers, 30000); 
       } else {
         loginScreen.style.display = 'flex';
         appContent.style.display = 'none';
-        
         if (staleCheckInterval) clearInterval(staleCheckInterval);
         clearMapState();
       }
@@ -216,8 +307,7 @@
     });
 
     logoutBtn.addEventListener('click', async () => {
-      // Fix: Stop sharing and delete doc BEFORE signing out to preserve permissions
-      await stopSharing(); 
+      if (isSharing) await stopSharing(); 
       signOut(auth);
     });
 
@@ -226,20 +316,35 @@
     function initMap() {
       if (mapInitialized) return;
       
-      map = L.map('map').setView([-32.12, 116.01], 13);
+      map = L.map('map', { zoomControl: false }).setView([-32.12, 116.01], 13);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors'
+        attribution: '© OpenStreetMap'
       }).addTo(map);
       
+      // Move zoom control to bottom right so it doesn't conflict with top bar
+      L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+      // Break camera lock if the user manually drags the map
+      map.on('dragstart', () => {
+        if (lockedUserId) {
+          lockedUserId = null;
+          showToast("Camera unlocked");
+        }
+      });
+
       setTimeout(() => map.invalidateSize(), 100); 
       mapInitialized = true;
     }
 
     function fitMapToMarkers() {
+      lockedUserId = null; // Break lock on 'Find All'
       const markers = Object.values(userMarkers).map(u => u.marker);
       if (markers.length > 0) {
         const group = new L.featureGroup(markers);
         map.fitBounds(group.getBounds().pad(0.1));
+        showToast("Showing everyone");
+      } else {
+        showToast("No active users found");
       }
     }
 
@@ -250,10 +355,10 @@
         unsubscribeLocations();
         unsubscribeLocations = null;
       }
-      // Remove all active markers from map
       Object.values(userMarkers).forEach(u => map.removeLayer(u.marker));
       userMarkers = {};
       initialFitDone = false;
+      lockedUserId = null;
     }
 
     function removeStaleMarkers() {
@@ -262,6 +367,7 @@
         if (now - userData.timestamp > STALE_TIMEOUT_MS) {
           map.removeLayer(userData.marker);
           delete userMarkers[userId];
+          if (lockedUserId === userId) lockedUserId = null; // Unlock if user goes offline
         }
       }
     }
@@ -274,30 +380,91 @@
           const userId = change.doc.id;
           
           if (change.type === "added" || change.type === "modified") {
-            // Ignore points that are already stale on arrival
             if (Date.now() - data.timestamp > STALE_TIMEOUT_MS) return;
 
             if (!userMarkers[userId]) {
               const marker = L.marker([data.lat, data.lng]).addTo(map);
+              
+              // Click marker to lock camera
+              marker.on('click', () => {
+                lockedUserId = userId;
+                map.setView([data.lat, data.lng], 16);
+                showToast(`Locked onto ${data.name}`);
+              });
+
               userMarkers[userId] = { marker: marker, timestamp: data.timestamp };
             } else {
               userMarkers[userId].marker.setLatLng([data.lat, data.lng]);
               userMarkers[userId].timestamp = data.timestamp;
             }
+            
             userMarkers[userId].marker.bindPopup(`<div class="user-marker">${data.name}</div>`);
+
+            // If camera is locked to this user, pan the map when they move
+            if (lockedUserId === userId) {
+              map.panTo([data.lat, data.lng]);
+            }
           }
           
           if (change.type === "removed" && userMarkers[userId]) {
             map.removeLayer(userMarkers[userId].marker);
             delete userMarkers[userId];
+            if (lockedUserId === userId) lockedUserId = null;
           }
         });
         
         if (!initialFitDone && Object.keys(userMarkers).length > 0) {
-          fitMapToMarkers();
+          const markers = Object.values(userMarkers).map(u => u.marker);
+          const group = new L.featureGroup(markers);
+          map.fitBounds(group.getBounds().pad(0.1));
           initialFitDone = true;
         }
       });
+    }
+
+    async function startSharing() {
+      const name = usernameInput.value.trim();
+      if (!name) {
+        showToast("Please enter your name!");
+        return;
+      }
+      if (!navigator.geolocation) {
+        showToast("Geolocation not supported.");
+        return;
+      }
+
+      localStorage.setItem('whereuat_username', name); 
+      setTrafficLight('acquiring');
+      usernameInput.disabled = true;
+      
+      currentUserId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      try {
+        watchId = navigator.geolocation.watchPosition(
+          (position) => {
+            const { latitude, longitude } = position.coords;
+            setDoc(doc(db, "locations", currentUserId), {
+              name: name,
+              lat: latitude,
+              lng: longitude,
+              timestamp: Date.now()
+            });
+            isSharing = true;
+            setTrafficLight('sharing');
+          },
+          (error) => {
+            console.error("Location error:", error);
+            setTrafficLight('error');
+            showToast("GPS Error. Please try again.");
+            stopSharing();
+          },
+          { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
+        );
+      } catch (error) {
+        console.error("Firebase error:", error);
+        setTrafficLight('error');
+        showToast("Server Connection Error");
+      }
     }
 
     async function stopSharing() {
@@ -312,66 +479,23 @@
         currentUserId = null;
       }
       
-      startBtn.style.display = 'inline-block';
-      stopBtn.style.display = 'none';
+      isSharing = false;
       usernameInput.disabled = false;
-      
-      statusDiv.textContent = "Sharing stopped";
-      statusDiv.className = "status";
+      setTrafficLight('ready');
+      showToast("Sharing stopped");
     }
 
-    startBtn.addEventListener('click', async () => {
-      const name = usernameInput.value.trim();
-      if (!name) return alert("Please enter your name!");
-      if (!navigator.geolocation) return alert("Geolocation not supported.");
-
-      localStorage.setItem('whereuat_username', name); // QoL: Save name
-      
-      statusDiv.textContent = "Acquiring GPS lock...";
-      statusDiv.className = "status";
-      
-      currentUserId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
-      try {
-        watchId = navigator.geolocation.watchPosition(
-          (position) => {
-            const { latitude, longitude } = position.coords;
-            setDoc(doc(db, "locations", currentUserId), {
-              name: name,
-              lat: latitude,
-              lng: longitude,
-              timestamp: Date.now()
-            });
-            statusDiv.textContent = `Sharing as: ${name}`;
-            statusDiv.className = "status active";
-          },
-          (error) => {
-            console.error("Location error:", error);
-            statusDiv.textContent = `Error: ${error.message}`;
-            statusDiv.className = "status error";
-            stopSharing();
-          },
-          { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
-        );
-
-        startBtn.style.display = 'none';
-        stopBtn.style.display = 'inline-block';
-        usernameInput.disabled = true;
-
-      } catch (error) {
-        console.error("Firebase error:", error);
-        statusDiv.textContent = "Error connecting to server";
-        statusDiv.className = "status error";
+    // Toggle button logic
+    shareToggleBtn.addEventListener('click', async () => {
+      if (isSharing) {
+        await stopSharing();
+      } else {
+        await startSharing();
       }
     });
 
-    stopBtn.addEventListener('click', stopSharing);
-
-    // Attempt cleanup if user explicitly closes the browser/tab
     window.addEventListener('pagehide', () => {
       if (currentUserId) {
-        // Fire and forget - browsers restrict async operations during page closure, 
-        // but this adds a layer of redundancy to the sweeping logic.
         deleteDoc(doc(db, "locations", currentUserId)).catch(() => {});
       }
     });
