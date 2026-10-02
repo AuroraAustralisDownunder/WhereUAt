@@ -948,111 +948,244 @@
         unsubscribeLocations = null;
       }
       const locationsQuery = query(collection(db, 'locations'));
-      unsubscribeLocations = onSnapshot(locationsQuery, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          const data = change.doc.data();
-          const userId = change.doc.id;
+      unsubscribeLocations = onSnapshot(
+        locationsQuery,
+        (snapshot) => {
+          snapshot.docChanges().forEach((change) => {
+            const data = change.doc.data();
+            const userId = change.doc.id;
 
-          if (change.type === 'added' || change.type === 'modified') {
-            if (Date.now() - data.timestamp > STALE_TIMEOUT_MS) return;
-            upsertMarker(userId, data);
-          }
-
-          if (change.type === 'removed' && userMarkers[userId]) {
-            map.removeLayer(userMarkers[userId].marker);
-            delete userMarkers[userId];
-            if (lockedUserId === userId) {
-              lockedUserId = null;
-              updateUnlockFab();
+            if (change.type === 'added' || change.type === 'modified') {
+              if (Date.now() - data.timestamp > STALE_TIMEOUT_MS) return;
+              // While we are sharing, local paintSelfLocally owns the self marker —
+              // still accept cloud updates for accuracy/name sync.
+              upsertMarker(userId, data);
+              if (currentUserId && userId === currentUserId) {
+                refreshMarkerIcon(userId, data.name || resolveAlias(), true);
+              }
             }
+
+            if (change.type === 'removed' && userMarkers[userId]) {
+              // Do not remove our own local pin just because cloud doc vanished mid-share.
+              if (isSharing && currentUserId && userId === currentUserId) return;
+              map.removeLayer(userMarkers[userId].marker);
+              delete userMarkers[userId];
+              if (lockedUserId === userId) {
+                lockedUserId = null;
+                updateUnlockFab();
+              }
+            }
+          });
+
+          updateEmptyHint();
+
+          if (!initialFitDone && Object.keys(userMarkers).length > 0) {
+            const markers = Object.values(userMarkers).map(u => u.marker);
+            const group = new L.featureGroup(markers);
+            map.fitBounds(group.getBounds().pad(0.1));
+            initialFitDone = true;
           }
-        });
-
-        updateEmptyHint();
-
-        if (!initialFitDone && Object.keys(userMarkers).length > 0) {
-          const markers = Object.values(userMarkers).map(u => u.marker);
-          const group = new L.featureGroup(markers);
-          map.fitBounds(group.getBounds().pad(0.1));
-          initialFitDone = true;
+        },
+        (err) => {
+          console.error('Firestore locations listener error:', err);
+          showToast('Cloud locations unavailable — your pin still works locally while sharing.');
         }
+      );
+    }
+
+    function resolveAlias() {
+      const typed = usernameInput.value.trim();
+      if (typed) return typed;
+      const email = (auth.currentUser && auth.currentUser.email) || '';
+      const fromEmail = email.includes('@') ? email.split('@')[0] : '';
+      return fromEmail || 'You';
+    }
+
+    function geoErrorMessage(error) {
+      if (!error) return 'GPS error — please try again.';
+      switch (error.code) {
+        case 1: // PERMISSION_DENIED
+          return 'Location permission blocked — allow Location for this site in browser settings.';
+        case 2: // POSITION_UNAVAILABLE
+          return 'GPS unavailable — turn on phone/browser Location, or move near a window.';
+        case 3: // TIMEOUT
+          return 'Still acquiring GPS… keep the page open near a window.';
+        default:
+          return 'GPS error — please try again.';
+      }
+    }
+
+    function paintSelfLocally(lat, lng, name) {
+      if (!map || !currentUserId) return;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) return;
+      upsertMarker(currentUserId, {
+        name: name,
+        lat: lat,
+        lng: lng,
+        timestamp: Date.now()
       });
+      refreshMarkerIcon(currentUserId, name, true);
+      updateEmptyHint();
+      if (!initialFitDone) {
+        try {
+          map.setView([lat, lng], Math.max(map.getZoom(), 16));
+          initialFitDone = true;
+        } catch (_) {}
+      }
     }
 
-    async function startSharing() {
-      const name = usernameInput.value.trim();
-      if (!name) {
-        showToast('Please set your alias in Settings');
-        openSheet();
-        usernameInput.focus();
-        return;
-      }
-      if (!navigator.geolocation) {
-        showToast('Geolocation not supported.');
-        return;
-      }
-
-      localStorage.setItem('whereuat_username', name);
-      setTrafficLight('acquiring');
-      usernameInput.disabled = true;
-
-      currentUserId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
+    async function publishLocation(lat, lng, name) {
+      if (!currentUserId) return;
       try {
-        watchId = navigator.geolocation.watchPosition(
-          (position) => {
-            const { latitude, longitude } = position.coords;
-            setDoc(doc(db, 'locations', currentUserId), {
-              name: name,
-              lat: latitude,
-              lng: longitude,
-              timestamp: Date.now()
-            });
-            isSharing = true;
-            setTrafficLight('sharing');
-            updateEmptyHint();
-
-            // Promote existing marker to self style if snapshot already created it
-            if (userMarkers[currentUserId]) {
-              refreshMarkerIcon(currentUserId, name, true);
-            }
-          },
-          (error) => {
-            console.error('Location error:', error);
-            setTrafficLight('error');
-            showToast('GPS Error. Please try again.');
-            stopSharing();
-          },
-          { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
-        );
-      } catch (error) {
-        console.error('Firebase error:', error);
-        setTrafficLight('error');
-        showToast('Server Connection Error');
+        await setDoc(doc(db, 'locations', currentUserId), {
+          name: name,
+          lat: lat,
+          lng: lng,
+          timestamp: Date.now(),
+          uid: auth.currentUser ? auth.currentUser.uid : null
+        });
+      } catch (e) {
+        console.error('Firestore location write failed:', e);
+        // Local pin already shown — do not stop GPS for a server write failure.
+        showToast('Location found, but cloud sync failed (check Firestore rules).');
       }
     }
 
-    async function stopSharing() {
+    function beginWatch(name, options, allowLowAccuracyFallback) {
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
       }
-      if (currentUserId) {
-        try {
-          await deleteDoc(doc(db, 'locations', currentUserId));
-        } catch (e) { console.error('Cleanup error:', e); }
-        currentUserId = null;
+
+      watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          isSharing = true;
+          setTrafficLight('sharing');
+          // Local GPS must paint immediately — must NOT wait on Firestore.
+          paintSelfLocally(latitude, longitude, name);
+          publishLocation(latitude, longitude, name);
+        },
+        (error) => {
+          console.error('Location error:', error);
+          const msg = geoErrorMessage(error);
+
+          // TIMEOUT: keep watching. High-accuracy 10s timeouts are common indoors;
+          // stopping here was the main "GPS Error" false failure on mobile browsers.
+          if (error && error.code === 3) {
+            setTrafficLight('acquiring');
+            shareStatusText.textContent = 'Still acquiring GPS…';
+            showToast(msg);
+            if (allowLowAccuracyFallback) {
+              beginWatch(name, {
+                enableHighAccuracy: false,
+                maximumAge: 30000,
+                timeout: 20000
+              }, false);
+            }
+            return;
+          }
+
+          // Permission denied — must stop; browser will not recover without user action.
+          if (error && error.code === 1) {
+            setTrafficLight('error');
+            showToast(msg);
+            stopSharing({ silent: true });
+            return;
+          }
+
+          // POSITION_UNAVAILABLE: retry once with low accuracy before giving up.
+          if (error && error.code === 2 && allowLowAccuracyFallback) {
+            setTrafficLight('acquiring');
+            showToast(msg);
+            beginWatch(name, {
+              enableHighAccuracy: false,
+              maximumAge: 30000,
+              timeout: 20000
+            }, false);
+            return;
+          }
+
+          setTrafficLight('error');
+          showToast(msg);
+          stopSharing({ silent: true });
+        },
+        options
+      );
+    }
+
+    async function startSharing() {
+      if (!window.isSecureContext) {
+        showToast('Location needs HTTPS (or localhost). Open the GitHub Pages URL.');
+        setTrafficLight('error');
+        return;
+      }
+      if (!navigator.geolocation) {
+        showToast('Geolocation not supported in this browser.');
+        setTrafficLight('error');
+        return;
+      }
+      if (!auth.currentUser) {
+        showToast('Please sign in first.');
+        return;
       }
 
+      const name = resolveAlias();
+      usernameInput.value = name;
+      localStorage.setItem('whereuat_username', name);
+      setTrafficLight('acquiring');
+      usernameInput.disabled = true;
+
+      // Use Firebase Auth UID so Firestore rules keyed on auth.uid can allow writes.
+      // Random user_* ids broke sync when rules required request.auth.uid == doc id.
+      currentUserId = auth.currentUser.uid;
+
+      try {
+        beginWatch(name, {
+          enableHighAccuracy: true,
+          maximumAge: 15000,
+          timeout: 20000
+        }, true);
+      } catch (error) {
+        console.error('Geolocation start failed:', error);
+        setTrafficLight('error');
+        showToast('Could not start GPS — check browser Location permission.');
+        usernameInput.disabled = false;
+      }
+    }
+
+    async function stopSharing(opts = {}) {
+      const silent = !!opts.silent;
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      const uidToClear = currentUserId;
+      // Remove local self pin immediately (independent of Firestore).
+      if (uidToClear && userMarkers[uidToClear]) {
+        try { map.removeLayer(userMarkers[uidToClear].marker); } catch (_) {}
+        delete userMarkers[uidToClear];
+        if (lockedUserId === uidToClear) {
+          lockedUserId = null;
+          updateUnlockFab();
+        }
+      }
+      if (uidToClear) {
+        try {
+          await deleteDoc(doc(db, 'locations', uidToClear));
+        } catch (e) { console.error('Cleanup error:', e); }
+      }
+      currentUserId = null;
       isSharing = false;
       usernameInput.disabled = false;
       setTrafficLight('ready');
       updateEmptyHint();
-      showToast('Sharing stopped');
+      if (!silent) showToast('Sharing stopped');
     }
 
     shareToggleBtn.addEventListener('click', async () => {
-      if (isSharing) {
+      if (isSharing || shareState === 'acquiring') {
         await stopSharing();
       } else {
         await startSharing();
